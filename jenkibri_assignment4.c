@@ -59,6 +59,41 @@ void freeCommandLine(commandLine* currCommand) {
     free(currCommand);
 }
 
+/* A CTRL-C command from the keyboard sends a SIGINT signal to the parent
+process and all children at the same time (this is a built-in part of Linux).
+
+Your shell, i.e., the parent process, must ignore SIGINT.
+Any children running as background processes must ignore SIGINT.
+A child running as a foreground process must terminate itself when it receives SIGINT.
+The parent must not attempt to terminate the foreground child process; instead the
+foreground child (if any) must terminate itself on receipt of this signal.
+If a child foreground process is killed by a signal, the parent must immediately
+print out the number of the signal that killed it's foreground child process (see
+the example) before prompting the user for the next command. */
+void handle_SIGINT() {
+    
+}
+
+
+/*A CTRL-Z command from the keyboard sends a SIGTSTP signal to your parent shell
+process and all children at the same time (this is a built-in part of Linux).
+
+A child, if any, running as a foreground process must ignore SIGTSTP.
+Any children running as background process must ignore SIGTSTP.
+When the parent process running the shell receives SIGTSTP
+The shell must display an informative message (see below) immediately if it's sitting
+at the prompt, or immediately after any currently running foreground process has terminated
+The shell then enters a state where subsequent commands can no longer be run in the background.
+In this state, the & operator must simply be ignored, i.e., all such commands are run as if
+they were foreground processes.
+If the user sends SIGTSTP again, then your shell will Display another informative message
+(see below) immediately after any currently running foreground process terminates
+The shell then returns back to the normal condition where the & operator is once again honored
+for subsequent commands, allowing them to be executed in the background.*/
+void handle_SIGTSTP() {
+
+}
+
 
 int main() {
     // Array to hold background process IDs.
@@ -80,8 +115,10 @@ int main() {
                 } else if (bgPid == bgProcessArray[i]) {
                     if(WIFEXITED(childStatus)) {
                         printf("background pid %d is done: exit value %d\n", bgPid, WEXITSTATUS(childStatus));
+                        fflush(stdout);
                     } else if (WIFSIGNALED(childStatus)) {
                         printf("background pid %d is done: terminated by signal %d\n", bgPid, WTERMSIG(childStatus));
+                        fflush(stdout);
                     }
                     for (int j = i; j < bgProcessCount - 1; j++) {
                         bgProcessArray[j] = bgProcessArray[j + 1];
@@ -113,24 +150,42 @@ int main() {
                 char* newPath = currCommand->argv[1];
                 if (chdir(newPath) != 0) {
                     perror("Error changing directory");
+                    fflush(stdout); 
                 } 
             } else {
                 char* homeVar = getenv("HOME");
                 if (chdir(homeVar) != 0) {
                     perror("Error changing directory");
+                    fflush(stdout); 
                 }
-            }  
+            }
         } 
         // Handles "exit" commands.
         else if (strcmp(command, "exit") == 0) {
-            continue;
+            if (bgProcessCount > 0) {
+                for (int i = bgProcessCount - 1; bgProcessCount > 0; i--) {
+                    if (kill(bgProcessArray[i], 15) == 0) {
+                        bgProcessCount--;
+                    } else {
+                        printf("Failed to end process %d", bgProcessArray[i]);
+                        fflush(stdout);
+                    }
+                }
+            }
+            int parentPid = getpid();
+            if(kill(parentPid, 15) != 0) {
+                printf("Failed to end process %d", parentPid);
+                fflush(stdout);
+            }
         }
         // Handles "status" commands.
         else if (strcmp(command, "status") == 0) {
             if(WIFEXITED(childStatus)) {
                 printf("exit value %d\n", WEXITSTATUS(childStatus));
+                fflush(stdout);
             } else if (WIFSIGNALED(childStatus)) {
                 printf("terminated by signal %d\n", WTERMSIG(childStatus));
+                fflush(stdout);
             }
         } 
         // Handles all other non built-in commands.
@@ -140,6 +195,7 @@ int main() {
             if (childPid == -1) {
                 // If fork unsuccessful.
                 perror("fork()\n");
+                fflush(stdout);
                 exit(1);
                 continue;
             } else if (childPid == 0) {
@@ -147,13 +203,15 @@ int main() {
                 if (currCommand->inputFile != NULL) {
                     int inSourceFD = open(currCommand->inputFile, O_RDONLY);
                     if (inSourceFD == -1) { 
-                        printf("cannot open %s for input\n", currCommand->inputFile); 
+                        printf("cannot open %s for input\n", currCommand->inputFile);
+                        fflush(stdout); 
                         exit(EXIT_FAILURE); 
                     }
 
                     int inRedirectFD = dup2(inSourceFD, 0);
                     if (inRedirectFD == -1) { 
-                        perror("error redirecting input"); 
+                        perror("error redirecting input");
+                        fflush(stdout); 
                         exit(EXIT_FAILURE); 
                     }
 
@@ -165,13 +223,15 @@ int main() {
                     // Redirect stdout.
                     int outSourceFD = open(currCommand->outputFile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
                     if (outSourceFD == -1) { 
-                        printf("cannot open %s for output\n", currCommand->outputFile); 
+                        printf("cannot open %s for output\n", currCommand->outputFile);
+                        fflush(stdout); 
                         exit(EXIT_FAILURE); 
                     }
 
                     int outRedirectFD = dup2(outSourceFD, 1);
                     if (outRedirectFD == -1) { 
-                        perror("error redirecting output"); 
+                        perror("error redirecting output");
+                        fflush(stdout); 
                         exit(EXIT_FAILURE); 
                     }
 
@@ -182,7 +242,8 @@ int main() {
                 execvp(currCommand->argv[0], currCommand->argv);
 
                 // If command execution results in error.
-                printf("%s: no such file or directory\n", currCommand->argv[0]);   
+                printf("%s: no such file or directory\n", currCommand->argv[0]);
+                fflush(stdout);   
                 exit(EXIT_FAILURE);
 
                 continue;
@@ -191,6 +252,7 @@ int main() {
                     childPid = waitpid(childPid, &childStatus, 0);
                 } else {
                     printf("background pid is %d\n", childPid);
+                    fflush(stdout);
                     bgProcessArray[bgProcessCount] = childPid;
                     bgProcessCount++;
                 }
