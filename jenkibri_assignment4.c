@@ -10,18 +10,18 @@
 #define MAX_ARGS 512
 
 
-struct command_line {
-    char *argv[MAX_ARGS + 1];
+typedef struct commandLine {
+    char* argv[MAX_ARGS + 1];
     int argc;
-    char *input_file;
-    char *output_file;
-    bool is_bg;
-};
+    char* inputFile;
+    char* outputFile;
+    bool isBg;
+} commandLine;
 
 
-struct command_line *parse_input() {
+commandLine *parse_input() {
     char input[INPUT_LENGTH];
-    struct command_line *curr_command = (struct command_line *) calloc(1, sizeof(struct command_line));
+    commandLine* currCommand = (commandLine*) calloc(1, sizeof(commandLine));
 
     // Get input
     printf(": ");
@@ -32,45 +32,67 @@ struct command_line *parse_input() {
     char *token = strtok(input, " \n");
     while(token){
         if(!strcmp(token,"<")) {
-            curr_command->input_file = strdup(strtok(NULL," \n"));
+            currCommand->inputFile = strdup(strtok(NULL," \n"));
         } else if(!strcmp(token,">")) {
-            curr_command->output_file = strdup(strtok(NULL," \n"));
+            currCommand->outputFile = strdup(strtok(NULL," \n"));
         } else if(!strcmp(token,"&")) {
-            curr_command->is_bg = true;
+            currCommand->isBg = true;
         } else {
-            curr_command->argv[curr_command->argc++] = strdup(token);
+            currCommand->argv[currCommand->argc++] = strdup(token);
         }
         token=strtok(NULL," \n");
     }
 
-    return curr_command;
+    return currCommand;
+} 
+
+
+void freeCommandLine(commandLine* currCommand) {
+    
+    for (int i = 0; currCommand->argv[i] != NULL; i++) {
+        free(currCommand->argv[i]);
+    }
+    free(currCommand->inputFile);
+    free(currCommand->outputFile);
+
+    free(currCommand);
 }
 
 
 int main() {
-    struct command_line *curr_command;
     while(true) {
-        curr_command = parse_input();
-        char* command = curr_command->argv[0];
-        if (strcmp(command, "cd") == 0) {
+        // Parses the command line into a struct.
+        commandLine* currCommand = parse_input();
+
+        // If a blank line was entered.
+        if (currCommand->argc == 0){
+            continue;
+        }
+
+        char* command = currCommand->argv[0];
+        char firstChar = command[0];
+        // If a comment line was entered, do nothing.
+        if (firstChar == '#') {   
+            continue;
+        } else if (strcmp(command, "cd") == 0) {
             continue;
         } else if (strcmp(command, "exit") == 0) {
             continue;
         } else if (strcmp(command, "status") == 0) {
             continue;
         } else {
-            // Fork child process.
+            // Fork child process to run other commands.
             int childStatus;
             pid_t spawnPid = fork();
-
             switch(spawnPid) {
                 case -1:
+                    // If fork unsuccessful.
                     perror("fork()\n");
                     exit(1);
                     break;
                 case 0:
                     // Searches PATH variable for command and executes command.
-                    execvp(curr_command->argv[0], curr_command->argv);
+                    execvp(currCommand->argv[0], currCommand->argv);
 
                     // If command execution results in error.
                     perror("execv");   
@@ -80,6 +102,7 @@ int main() {
                     spawnPid = waitpid(spawnPid, &childStatus, 0);
             }
         }
+        freeCommandLine(currCommand);
     }
     return EXIT_SUCCESS;
 }
