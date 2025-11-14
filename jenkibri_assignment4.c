@@ -1,3 +1,18 @@
+/**
+ * Author: Brice Jenkins
+ * ONID: jenkibri
+ * Class/Section: CS374 Operating Systems I
+ * Assignment: Programming Assignment 4 - SMALLSH
+ * Date: 11/14/2025
+ * Description: Implements a shell, smallsh, that provides a prompt for
+ *              running commands, executes three commands (exit, cd, and
+ *              status) built into the shell, executes other shells commands
+ *              by creating a new process using an exec() family function,
+ *              supports input and output redirection, supports running
+ *              commands in foreground and background processes, and contains
+ *              custom handlers for SIGINT and SIGTSTP. 
+ */
+
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -5,31 +20,44 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <sys/types.h>
+#include <signal.h>
 
 
+// Macros for max length of command and max number of arguments.
 #define INPUT_LENGTH 2048
 #define MAX_ARGS 512
 
-
+/**
+ * @struct commandLine
+ * @brief Represents a shell command with arguments (including the command),
+ * and input file and/or output file name (for file redirection) and whether
+ * the command is to run in the background or not.
+ */
 typedef struct commandLine {
     char* argv[MAX_ARGS + 1];
     int argc;
     char* inputFile;
     char* outputFile;
-    bool isBg;
+    bool isBg;   // true if command is a background process.
 } commandLine;
 
 
-commandLine *parse_input() {
+/**
+ * parseInput - Reads command input from a user and parses the command into
+ * a commandLine struct.
+ * @returns A pointer to a commandLine struct containing the command data.
+ */
+commandLine *parseInput(void) {
     char input[INPUT_LENGTH];
     commandLine* currCommand = (commandLine*) calloc(1, sizeof(commandLine));
 
-    // Get input
+    // Get input from user.
     printf(": ");
     fflush(stdout);
     fgets(input, INPUT_LENGTH, stdin);
 
-    // Tokenize the input
+    // Tokenize the input and store in commandLine struct.
     char *token = strtok(input, " \n");
     while(token){
         if(!strcmp(token,"<")) {
@@ -48,30 +76,31 @@ commandLine *parse_input() {
 } 
 
 
+/**
+ * freeCommandLine - Frees dynamic memory allocated to a commandLine struct.
+ * @param currCommand A pointer to a currCommand struct.
+ */
 void freeCommandLine(commandLine* currCommand) {
-    
+    // Loops through array of arguments and frees strdup memory.
+    // Array itself was not dynamically allocated.
     for (int i = 0; currCommand->argv[i] != NULL; i++) {
         free(currCommand->argv[i]);
     }
     free(currCommand->inputFile);
     free(currCommand->outputFile);
-
     free(currCommand);
 }
 
-/* A CTRL-C command from the keyboard sends a SIGINT signal to the parent
-process and all children at the same time (this is a built-in part of Linux).
 
-Your shell, i.e., the parent process, must ignore SIGINT.
-Any children running as background processes must ignore SIGINT.
-A child running as a foreground process must terminate itself when it receives SIGINT.
-The parent must not attempt to terminate the foreground child process; instead the
-foreground child (if any) must terminate itself on receipt of this signal.
-If a child foreground process is killed by a signal, the parent must immediately
-print out the number of the signal that killed it's foreground child process (see
-the example) before prompting the user for the next command. */
-void handle_SIGINT() {
-    
+/**
+ * handleSIGINT - Returns termination message for foreground processes stopped
+ * by SIGINT.
+ */
+void handleSIGINT(int signo) {
+    int childStatus;
+    pid_t pid;
+    char message[] = "terminated by signal 2\n";
+    write(STDOUT_FILENO, &message, 24); 
 }
 
 
@@ -91,26 +120,36 @@ If the user sends SIGTSTP again, then your shell will Display another informativ
 The shell then returns back to the normal condition where the & operator is once again honored
 for subsequent commands, allowing them to be executed in the background.*/
 void handle_SIGTSTP() {
-
+    //TO DO: Implement handler for SIGTSTP
 }
 
 
+/**
+ * main - The main execution flow of the program.
+ */
 int main() {
     // Array to hold background process IDs.
-    int bgProcessArray[512];
+    int bgProcessArray[1000];
     int bgProcessCount = 0;
 
     while(true) {
         int childStatus;
-        
-        // Loop through array of background process IDs and check if they are done.
+
+        // Ignores SIGINT before a command is run.
+        struct sigaction SIGINTparent;
+        SIGINTparent.sa_handler = SIG_IGN;
+        sigemptyset(&SIGINTparent.sa_mask);
+        SIGINTparent.sa_flags = SA_NODEFER;
+        sigaction(SIGINT, &SIGINTparent, NULL);
+
+        // Loop through array of background process IDs and check if they are terminated.
         if (bgProcessCount > 0) {
+            usleep(100000);
             for (int i = 0; i < bgProcessCount; i++) {
                 pid_t bgPid = waitpid(bgProcessArray[i], &childStatus, WNOHANG);
                 if (bgPid == -1) {
                     break;
                 } else if (bgPid == 0) {
-                    sleep(0.25);
                     continue;
                 } else if (bgPid == bgProcessArray[i]) {
                     if(WIFEXITED(childStatus)) {
@@ -130,7 +169,7 @@ int main() {
         }
 
         // Presents new prompt and parses command line input into a struct.
-        commandLine* currCommand = parse_input();
+        commandLine* currCommand = parseInput();
 
         // If a blank line was entered.
         if (currCommand->argc == 0){
@@ -144,7 +183,7 @@ int main() {
         if (firstChar == '#') {   
             continue;
         } 
-        // Handles "cd" commands with one optional argument.
+        // Handles "cd" commands with one optional argument for a file path.
         else if (strcmp(command, "cd") == 0) {
             if (currCommand->argv[1] != NULL) {
                 char* newPath = currCommand->argv[1];
@@ -162,6 +201,7 @@ int main() {
         } 
         // Handles "exit" commands.
         else if (strcmp(command, "exit") == 0) {
+            // Terminate any background child processes running.
             if (bgProcessCount > 0) {
                 for (int i = bgProcessCount - 1; bgProcessCount > 0; i--) {
                     if (kill(bgProcessArray[i], 15) == 0) {
@@ -172,7 +212,16 @@ int main() {
                     }
                 }
             }
-            int parentPid = getpid();
+
+            // Terminate smallsh.
+            int shellPid = getpid();
+            if(kill(shellPid, 15) != 0) {
+                printf("Failed to end process %d", shellPid);
+                fflush(stdout);
+            }
+
+            // Terminate parent process.
+            int parentPid = getppid();
             if(kill(parentPid, 15) != 0) {
                 printf("Failed to end process %d", parentPid);
                 fflush(stdout);
@@ -192,13 +241,25 @@ int main() {
         else {
             // Fork child process to run other commands.
             pid_t childPid = fork();
+        
             if (childPid == -1) {
                 // If fork unsuccessful.
                 perror("fork()\n");
                 fflush(stdout);
                 exit(1);
                 continue;
-            } else if (childPid == 0) {
+            } else if (childPid == 0) {   // Child process
+                // SIGINT: default for foreground child processes but ignored for background.
+                struct sigaction SIGINTchild;
+                if (!currCommand->isBg) {
+                    SIGINTchild.sa_handler = SIG_DFL;
+                } else {
+                    SIGINTchild.sa_handler = SIG_IGN;
+                }
+                sigemptyset(&SIGINTchild.sa_mask);
+                SIGINTchild.sa_flags = 0;
+                sigaction(SIGINT, &SIGINTchild, NULL);
+
                 // Redirect stdin if input file specified.
                 if (currCommand->inputFile != NULL) {
                     int inSourceFD = open(currCommand->inputFile, O_RDONLY);
@@ -207,14 +268,13 @@ int main() {
                         fflush(stdout); 
                         exit(EXIT_FAILURE); 
                     }
-
                     int inRedirectFD = dup2(inSourceFD, 0);
                     if (inRedirectFD == -1) { 
                         perror("error redirecting input");
                         fflush(stdout); 
                         exit(EXIT_FAILURE); 
                     }
-
+                    // Close original file descriptor.
                     close(inSourceFD);
                 }
                 
@@ -227,14 +287,13 @@ int main() {
                         fflush(stdout); 
                         exit(EXIT_FAILURE); 
                     }
-
                     int outRedirectFD = dup2(outSourceFD, 1);
                     if (outRedirectFD == -1) { 
                         perror("error redirecting output");
                         fflush(stdout); 
                         exit(EXIT_FAILURE); 
                     }
-
+                    // Close original file descriptor.
                     close(outSourceFD);
                 }
 
@@ -245,12 +304,20 @@ int main() {
                 printf("%s: no such file or directory\n", currCommand->argv[0]);
                 fflush(stdout);   
                 exit(EXIT_FAILURE);
-
                 continue;
-            } else {
+
+            } else {  // Parent process.
                 if (!currCommand->isBg) {
+                    // Install handler on SIGINT to deliver termination message
+                    // and set flag to restart interrupted processes. 
+                    SIGINTparent.sa_handler = handleSIGINT;
+                    SIGINTparent.sa_flags = SA_RESTART;
+                    sigaction(SIGINT, &SIGINTparent, NULL);
+
+                    // Wait for child to terminate.
                     childPid = waitpid(childPid, &childStatus, 0);
                 } else {
+                    // PIDs of background child processes are added to an array.
                     printf("background pid is %d\n", childPid);
                     fflush(stdout);
                     bgProcessArray[bgProcessCount] = childPid;
