@@ -3,7 +3,7 @@
  * ONID: jenkibri
  * Class/Section: CS374 Operating Systems I
  * Assignment: Programming Assignment 4 - SMALLSH
- * Date: 11/14/2025
+ * Date: 11/15/2025
  * Description: Implements a shell, smallsh, that provides a prompt for
  *              running commands, executes three commands (exit, cd, and
  *              status) built into the shell, executes other shells commands
@@ -22,11 +22,17 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <signal.h>
+#include <ctype.h>
 
 
 // Macros for max length of command and max number of arguments.
 #define INPUT_LENGTH 2048
 #define MAX_ARGS 512
+
+
+// Global variable to control foreground only mode via Ctrl-Z.
+bool fgOnlyMode = false;
+
 
 /**
  * @struct commandLine
@@ -55,21 +61,24 @@ commandLine *parseInput(void) {
     // Get input from user.
     printf(": ");
     fflush(stdout);
-    fgets(input, INPUT_LENGTH, stdin);
-
-    // Tokenize the input and store in commandLine struct.
-    char *token = strtok(input, " \n");
-    while(token){
-        if(!strcmp(token,"<")) {
-            currCommand->inputFile = strdup(strtok(NULL," \n"));
-        } else if(!strcmp(token,">")) {
-            currCommand->outputFile = strdup(strtok(NULL," \n"));
-        } else if(!strcmp(token,"&")) {
-            currCommand->isBg = true;
-        } else {
-            currCommand->argv[currCommand->argc++] = strdup(token);
+    // Conditional necessary to block errors returned when ^Z interrupts input.
+    if(fgets(input, INPUT_LENGTH, stdin) != NULL) {
+        // Tokenize the input and store in commandLine struct.
+        char *token = strtok(input, " \n");
+        while(token){
+            if(!strcmp(token,"<")) {
+                currCommand->inputFile = strdup(strtok(NULL," \n"));
+            } else if(!strcmp(token,">")) {
+                currCommand->outputFile = strdup(strtok(NULL," \n"));
+            } else if(!strcmp(token,"&")) {
+                if (!fgOnlyMode) {
+                    currCommand->isBg = true;
+                }
+            } else {
+                currCommand->argv[currCommand->argc++] = strdup(token);
+            }
+            token=strtok(NULL," \n");
         }
-        token=strtok(NULL," \n");
     }
 
     return currCommand;
@@ -97,30 +106,35 @@ void freeCommandLine(commandLine* currCommand) {
  * by SIGINT.
  */
 void handleSIGINT(int signo) {
-    int childStatus;
-    pid_t pid;
     char message[] = "terminated by signal 2\n";
     write(STDOUT_FILENO, &message, 24); 
 }
 
 
-/*A CTRL-Z command from the keyboard sends a SIGTSTP signal to your parent shell
-process and all children at the same time (this is a built-in part of Linux).
+/**
+ * handleSIGTSTP - 
+ */
+void handleSIGTSTP(int signo) {
+    int childStatus;
+    while(waitpid(-1, &childStatus, 0) < -1);
+    if (!fgOnlyMode) {
+        fgOnlyMode = true;
+        char message[] = "\nEntering foreground-only mode (& is now ignored)\n";
+        write(STDOUT_FILENO, &message, 50);
+    } else {
+        fgOnlyMode = false;
+        char message[] = "\nExiting foreground-only mode\n";
+        write(STDOUT_FILENO, &message, 31);
+    }
+}
 
-A child, if any, running as a foreground process must ignore SIGTSTP.
-Any children running as background process must ignore SIGTSTP.
-When the parent process running the shell receives SIGTSTP
-The shell must display an informative message (see below) immediately if it's sitting
-at the prompt, or immediately after any currently running foreground process has terminated
-The shell then enters a state where subsequent commands can no longer be run in the background.
-In this state, the & operator must simply be ignored, i.e., all such commands are run as if
-they were foreground processes.
-If the user sends SIGTSTP again, then your shell will Display another informative message
-(see below) immediately after any currently running foreground process terminates
-The shell then returns back to the normal condition where the & operator is once again honored
-for subsequent commands, allowing them to be executed in the background.*/
-void handle_SIGTSTP() {
-    //TO DO: Implement handler for SIGTSTP
+/**
+ * handleSIGTSTP - 
+ */
+void handleChildSIGTSTP(int signo) {
+    raise(SIGCONT);
+    int childStatus;
+    while(waitpid(-1, &childStatus, 0) < -1);
 }
 
 
@@ -135,12 +149,18 @@ int main() {
     while(true) {
         int childStatus;
 
+        struct sigaction SIGINTparent, SIGTSTPparent;
         // Ignores SIGINT before a command is run.
-        struct sigaction SIGINTparent;
         SIGINTparent.sa_handler = SIG_IGN;
         sigemptyset(&SIGINTparent.sa_mask);
         SIGINTparent.sa_flags = SA_NODEFER;
         sigaction(SIGINT, &SIGINTparent, NULL);
+
+        // Installs handler for SIGTSTP.
+        SIGTSTPparent.sa_handler = handleSIGTSTP;
+        sigemptyset(&SIGTSTPparent.sa_mask);
+        SIGTSTPparent.sa_flags = 0;
+        sigaction(SIGTSTP, &SIGTSTPparent, NULL);
 
         // Loop through array of background process IDs and check if they are terminated.
         if (bgProcessCount > 0) {
@@ -152,6 +172,7 @@ int main() {
                 } else if (bgPid == 0) {
                     continue;
                 } else if (bgPid == bgProcessArray[i]) {
+                    // Print appropriate termination status.
                     if(WIFEXITED(childStatus)) {
                         printf("background pid %d is done: exit value %d\n", bgPid, WEXITSTATUS(childStatus));
                         fflush(stdout);
@@ -183,10 +204,21 @@ int main() {
         if (firstChar == '#') {   
             continue;
         } 
+
         // Handles "cd" commands with one optional argument for a file path.
         else if (strcmp(command, "cd") == 0) {
+            // If cd has specified path argument.
             if (currCommand->argv[1] != NULL) {
-                char* newPath = currCommand->argv[1];
+                // Build path in case there are spaces in folder names.
+                char newPath[INPUT_LENGTH];
+
+                strcpy(newPath, currCommand->argv[1]);
+                for (int i = 2; currCommand->argv[i] != NULL; i++) {
+                    strcat(newPath, " ");
+                    strcat(newPath, currCommand->argv[i]);
+                    // snprintf(newPath, sizeof(newPath), "%s %s", newPath, currCommand->argv[i]);
+                }
+                // If directory change results in an error.
                 if (chdir(newPath) != 0) {
                     perror("Error changing directory");
                     fflush(stdout); 
@@ -249,8 +281,8 @@ int main() {
                 exit(1);
                 continue;
             } else if (childPid == 0) {   // Child process
+                struct sigaction SIGINTchild, SIGTSTPchild;
                 // SIGINT: default for foreground child processes but ignored for background.
-                struct sigaction SIGINTchild;
                 if (!currCommand->isBg) {
                     SIGINTchild.sa_handler = SIG_DFL;
                 } else {
@@ -259,6 +291,12 @@ int main() {
                 sigemptyset(&SIGINTchild.sa_mask);
                 SIGINTchild.sa_flags = 0;
                 sigaction(SIGINT, &SIGINTchild, NULL);
+
+                // SIGTSTP: ignored for foreground and background processes.
+                SIGTSTPchild.sa_handler = SIG_IGN;
+                sigemptyset(&SIGTSTPchild.sa_mask);
+                SIGTSTPchild.sa_flags = 0;
+                sigaction(SIGTSTP, &SIGTSTPchild, NULL);
 
                 // Redirect stdin if input file specified.
                 if (currCommand->inputFile != NULL) {
@@ -315,7 +353,8 @@ int main() {
                     sigaction(SIGINT, &SIGINTparent, NULL);
 
                     // Wait for child to terminate.
-                    childPid = waitpid(childPid, &childStatus, 0);
+                    while(waitpid(childPid, &childStatus, 0) < -1);
+
                 } else {
                     // PIDs of background child processes are added to an array.
                     printf("background pid is %d\n", childPid);
